@@ -20,27 +20,48 @@ type SOAPDecoder interface {
 	Decode(v interface{}) error
 }
 
-type SOAPEnvelope struct {
-	XMLName xml.Name `xml:"http://schemas.xmlsoap.org/soap/envelope/ Envelope"`
-	Header  *SOAPHeader
-	Body    SOAPBody
+type SOAPEnvelopeMarshall struct {
+	XMLName xml.Name `xml:"soapenv:Envelope"`
+	Header  *SOAPHeaderMarshall
+	Body    SOAPBodyMarshall
+	XMLNS   string `xml:"xmlns:soapenv,attr"`
 }
 
-type SOAPHeader struct {
-	XMLName xml.Name `xml:"http://schemas.xmlsoap.org/soap/envelope/ Header"`
+type SOAPHeaderMarshall struct {
+	XMLName xml.Name `xml:"soapenv:Header"`
 
 	Headers []interface{}
 }
 
-type SOAPBody struct {
-	XMLName xml.Name `xml:"http://schemas.xmlsoap.org/soap/envelope/ Body"`
+type SOAPBodyMarshall struct {
+	XMLName xml.Name `xml:"soapenv:Body"`
 
 	Fault   *SOAPFault  `xml:",omitempty"`
 	Content interface{} `xml:",omitempty"`
 }
 
+type SOAPEnvelopeUnmarshal struct {
+	XMLName xml.Name `xml:"http://schemas.xmlsoap.org/soap/envelope/ Envelope"`
+	Header  *SOAPHeaderUnmarshal
+	Body    SOAPBodyUnmarshal
+}
+
+type SOAPHeaderUnmarshal struct {
+	XMLName xml.Name `xml:"http://schemas.xmlsoap.org/soap/envelope/ Header"`
+
+	Headers []interface{}
+}
+
+type SOAPBodyUnmarshal struct {
+	XMLName xml.Name `xml:"http://schemas.xmlsoap.org/soap/envelope/ Body"`
+
+	Fault   *SOAPFault  `xml:",omitempty"`
+	Content interface{} `xml:",omitempty"`
+	Errors  interface{}
+}
+
 // UnmarshalXML unmarshals SOAPBody xml
-func (b *SOAPBody) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
+func (b *SOAPBodyUnmarshal) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) error {
 	if b.Content == nil {
 		return xml.UnmarshalError("Content must be a pointer to a struct")
 	}
@@ -67,6 +88,7 @@ Loop:
 				return xml.UnmarshalError("Found multiple elements inside SOAP body; not wrapped-document/literal WS-I compliant")
 			} else if se.Name.Space == "http://schemas.xmlsoap.org/soap/envelope/" && se.Name.Local == "Fault" {
 				b.Fault = &SOAPFault{}
+				b.Fault.Detail = b.Errors
 				b.Content = nil
 
 				err = d.DecodeElement(b.Fault, &se)
@@ -91,12 +113,11 @@ Loop:
 }
 
 type SOAPFault struct {
-	XMLName xml.Name `xml:"http://schemas.xmlsoap.org/soap/envelope/ Fault"`
-
-	Code   string `xml:"faultcode,omitempty"`
-	String string `xml:"faultstring,omitempty"`
-	Actor  string `xml:"faultactor,omitempty"`
-	Detail string `xml:"detail,omitempty"`
+	XMLName xml.Name    `xml:"http://schemas.xmlsoap.org/soap/envelope/ Fault"`
+	Code    string      `xml:"faultcode,omitempty"`
+	String  string      `xml:"faultstring,omitempty"`
+	Actor   string      `xml:"faultactor,omitempty"`
+	Detail  interface{} `xml:"detail,omitempty"`
 }
 
 func (f *SOAPFault) Error() string {
@@ -280,20 +301,22 @@ func (s *Client) SetHeaders(headers ...interface{}) {
 }
 
 // CallContext performs HTTP POST request with a context
-func (s *Client) CallContext(ctx context.Context, soapAction string, request, response interface{}) error {
-	return s.call(ctx, soapAction, request, response)
+func (s *Client) CallContext(ctx context.Context, soapAction string, request, response interface{}, errors interface{}) error {
+	return s.call(ctx, soapAction, request, response, errors)
 }
 
 // Call performs HTTP POST request
-func (s *Client) Call(soapAction string, request, response interface{}) error {
-	return s.call(context.Background(), soapAction, request, response)
+func (s *Client) Call(soapAction string, request, response interface{}, errors interface{}) error {
+	return s.call(context.Background(), soapAction, request, response, errors)
 }
 
-func (s *Client) call(ctx context.Context, soapAction string, request, response interface{}) error {
-	envelope := SOAPEnvelope{}
+func (s *Client) call(ctx context.Context, soapAction string, request, response interface{}, errors interface{}) error {
+	envelope := SOAPEnvelopeMarshall{
+		XMLNS: "http://schemas.xmlsoap.org/soap/envelope/",
+	}
 
 	if s.headers != nil && len(s.headers) > 0 {
-		envelope.Header = &SOAPHeader{
+		envelope.Header = &SOAPHeaderMarshall{
 			Headers: s.headers,
 		}
 	}
@@ -358,8 +381,8 @@ func (s *Client) call(ctx context.Context, soapAction string, request, response 
 	}
 	defer res.Body.Close()
 
-	respEnvelope := new(SOAPEnvelope)
-	respEnvelope.Body = SOAPBody{Content: response}
+	respEnvelope := new(SOAPEnvelopeUnmarshal)
+	respEnvelope.Body = SOAPBodyUnmarshal{Content: response, Errors: errors}
 
 	mtomBoundary, err := getMtomHeader(res.Header.Get("Content-Type"))
 	if err != nil {
